@@ -34,6 +34,7 @@ from neutron.common import utils
 from neutron.extensions import allowedaddresspairs as addr_pair
 from neutron.extensions import multiprovidernet as mpnet
 from neutron.extensions import securitygroup as sg
+from neutron.plugins.ml2.common import exceptions as plugin_exc
 from neutron.plugins.ml2 import driver_context
 
 from networking_odl.common import callback as odl_call
@@ -104,16 +105,36 @@ class ResourceFilterBase(object):
 class NetworkFilter(ResourceFilterBase):
     _UNMAPPED_KEYS = ['qos_policy_id']
 
+    @staticmethod
+    def _network_attribute_compatibility(resource):
+        if resource[providernet.NETWORK_TYPE] == p_const.TYPE_VXLAN:
+            # NOTE(alegacy): WRS has implemented scoped vxlan provider
+            # networks which means that they are given names just like vlan
+            # based provider networks and they can be assigned to subsets of
+            # compute nodes.  Unfortunately, the ODL controller assumes that
+            # all vxlan based tenant networks will not have a physical
+            # network name.  If they do have one then ODL tries to find a
+            # switch that has that name in its provider_mappings attribute.
+            # That search will never succeed because we cannot add vxlan
+            # interfaces to the provider_mappings dict because that will
+            # cause ODL to treat those interfaces as vlan trunk ports and
+            # will hook them up to the br-int bridge which is not desirable
+            # and will break our IP stack since all packets will be sent to
+            # the openflow input handler instead of the IP stack.
+            resource[providernet.PHYSICAL_NETWORK] = None
+
     @classmethod
     def filter_create_attributes(cls, network, context):
         """Filter out network attributes not required for a create."""
         odl_utils.try_del(network, ['status', 'subnets'])
+        cls._network_attribute_compatibility(network)
         cls._filter_unmapped_null(network, cls._UNMAPPED_KEYS)
 
     @classmethod
     def filter_update_attributes(cls, network, context):
         """Filter out network attributes for an update operation."""
         odl_utils.try_del(network, ['id', 'status', 'subnets', 'tenant_id'])
+        cls._network_attribute_compatibility(network)
         cls._filter_unmapped_null(network, cls._UNMAPPED_KEYS)
 
     @classmethod
@@ -268,6 +289,40 @@ class OpenDaylightDriver(object):
         # self._network_topology = network_topology.NetworkTopologyManager(
         #     vif_details=self.vif_details)
 
+    def audit(self, context):
+        """Query audit report and raise Audit Failures."""
+        LOG.info("Running OpenDaylight ML2 driver Audit")
+        client_audit_report = self.client.get_audit_report()
+
+        driver = 'opendaylight'
+
+        # the implicit assumption is that only one exception
+        # may be raised. Process the audit report in priority
+        if client_audit_report.get('conn_failure', False):
+            raise plugin_exc.MechanismDriverAuditFailure(
+                driver=driver,
+                reason=plugin_exc.MECH_DRIVER_AUDIT_FAILURE_REASON_CONN)
+
+        elif client_audit_report.get('response_failure', False):
+            raise plugin_exc.MechanismDriverAuditFailure(
+                driver=driver,
+                reason=plugin_exc.MECH_DRIVER_AUDIT_FAILURE_REASON_RESPONSE)
+
+        elif client_audit_report.get('auth_failure', False):
+            raise plugin_exc.MechanismDriverAuditFailure(
+                driver=driver,
+                reason=plugin_exc.MECH_DRIVER_AUDIT_FAILURE_REASON_AUTH)
+
+        elif client_audit_report.get('dbsync_failure', False):
+            raise plugin_exc.MechanismDriverAuditFailure(
+                driver=driver,
+                reason=plugin_exc.MECH_DRIVER_AUDIT_FAILURE_REASON_DBSYNC)
+        else:
+            # Clear the audit report before new operation
+            self.client.clear_audit_report()
+            raise plugin_exc.MechanismDriverAuditSuccess(
+                driver=driver)
+
     def synchronize(self, operation, object_type, context):
         """Synchronize ODL with Neutron following a configuration change."""
         if self.out_of_sync:
@@ -308,6 +363,11 @@ class OpenDaylightDriver(object):
                             resource, plugin, dbcontext)
                         to_be_synced.append(resource)
                         ctx.reraise = False
+                    else:
+                        # sync failed, indicate DB sync failure.
+                        # If other failures were raised by self.client.json,
+                        # then they would be alarmed first
+                        self.client.set_audit_failure('dbsync_failure')
             else:
                 # TODO(yamahata): compare result with resource.
                 # If they don't match, update it below
@@ -380,6 +440,10 @@ class OpenDaylightDriver(object):
                            'object_type': object_type,
                            'object_id': obj_id})
                 self.out_of_sync = True
+                # sync failed, indicate DB sync failure.
+                # If other failures were raised by self.client.json,
+                # then they would be alarmed first
+                self.client.set_audit_failure('dbsync_failure')
 
     def sync_from_callback(self, context, operation, res_type,
                            res_id, resource_dict, **kwrags):
@@ -396,7 +460,7 @@ class OpenDaylightDriver(object):
                     urlpath = object_type + '/' + res_id
                     method = 'put'
                 self.client.sendjson(method, urlpath, resource_dict)
-        except Exception:
+        except requests.exceptions.HTTPError:
             with excutils.save_and_reraise_exception():
                 LOG.error("Unable to perform %(operation)s on "
                           "%(object_type)s %(res_id)s %(resource_dict)s",
@@ -405,6 +469,10 @@ class OpenDaylightDriver(object):
                            'res_id': res_id,
                            'resource_dict': resource_dict})
                 self.out_of_sync = True
+                # sync failed, indicate DB sync failure.
+                # If other failures were raised by self.client.json,
+                # then they would be alarmed first
+                self.client.set_audit_failure('dbsync_failure')
 
         # NOTE(yamahata) when security group is created, default rules
         # are also created.
@@ -512,3 +580,19 @@ class OpenDaylightMechanismDriver(api.MechanismDriver):
 
     def check_vlan_transparency(self, context):
         return self.odl_drv.check_vlan_transparency(context)
+
+    def audit(self, context):
+        self.odl_drv.audit(context)
+
+    def filter_hosts_with_segment_access(
+            self, context, segments, candidate_hosts, agent_getter):
+        # NOTE(alegacy): since this mechanism driver does not have knowledge
+        # about which networks are available on which host it is important that
+        # it returns an empty set.  If it did not override this method then
+        # host filtering would get disabled.  If it returned the full set of
+        # candidate hosts then the manager would think that every network is
+        # available on every host; which would be the equivalent to disabling
+        # filtering altogether.  We know that the neutron-avs-agent is running
+        # on all nodes and it has access to the physical mappings and so the
+        # decision about filtering is deferred to that agent.
+        return set()

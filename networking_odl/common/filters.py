@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.api.definitions import provider_net as providernet
 from neutron_lib import constants as n_const
 
 from networking_odl.common import constants as odl_const
@@ -69,14 +70,36 @@ _PORT_UNMAPPED_KEYS = ['binding:profile', 'dns_name',
                        'port_security_enabled', 'qos_policy_id']
 
 
+def _network_attribute_compatibility(resource):
+    if providernet.NETWORK_TYPE not in resource:
+        return
+    if resource[providernet.NETWORK_TYPE] == n_const.TYPE_VXLAN:
+        # NOTE(alegacy): WRS has implemented scoped vxlan provider
+        # networks which means that they are given names just like vlan
+        # based provider networks and they can be assigned to subsets of
+        # compute nodes.  Unfortunately, the ODL controller assumes that
+        # all vxlan based tenant networks will not have a physical
+        # network name.  If they do have one then ODL tries to find a
+        # switch that has that name in its provider_mappings attribute.
+        # That search will never succeed because we cannot add vxlan
+        # interfaces to the provider_mappings dict because that will
+        # cause ODL to treat those interfaces as vlan trunk ports and
+        # will hook them up to the br-int bridge which is not desirable
+        # and will break our IP stack since all packets will be sent to
+        # the openflow input handler instead of the IP stack.
+        resource[providernet.PHYSICAL_NETWORK] = None
+
+
 def _filter_network_create(network):
     odl_utils.try_del(network, ['status', 'subnets'])
+    _network_attribute_compatibility(network)
     _filter_unmapped_null(network, _NETWORK_UNMAPPED_KEYS)
 
 
 def _filter_network_update(network):
     odl_utils.try_del(network, ['id', 'status', 'subnets',
                                 'tenant_id', 'project_id'])
+    _network_attribute_compatibility(network)
     _filter_unmapped_null(network, _NETWORK_UNMAPPED_KEYS)
 
 

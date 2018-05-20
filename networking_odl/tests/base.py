@@ -52,6 +52,8 @@ class OpenDaylightRestClientFixture(fixtures.Fixture):
         cfg.CONF.set_override('password', 'somepass', 'ml2_odl')
         cfg.CONF.set_override('port_binding_controller',
                               'legacy-port-binding', 'ml2_odl')
+        cfg.CONF.set_override('state_path',
+                              self.useFixture(fixtures.TempDir()).path)
 
 
 class OpenDaylightRestClientGlobalFixture(fixtures.Fixture):

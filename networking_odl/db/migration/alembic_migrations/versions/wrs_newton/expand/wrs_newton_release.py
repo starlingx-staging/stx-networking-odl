@@ -1,4 +1,4 @@
-# Copyright (C) 2017 Red Hat Inc.
+# Copyright 2015 OpenStack Foundation
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -12,25 +12,25 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 #
+# Copyright (c) 2016 Wind River Systems, Inc.
+#
 
-"""Added version_id for optimistic locking
+"""WRS Newton Revision placeholder
 
-Revision ID: 43af357fd638
-Revises: wrs_newton
-Create Date: 2016-03-24 10:14:56.408413
+Revision ID: wrs_newton
+Revises:3d560427d776
+Create Date: 2016-05-27 00:00:01.000000
 
 """
 
 # revision identifiers, used by Alembic.
-revision = '43af357fd638'
-down_revision = 'wrs_newton'
-depends_on = ('fa0c536252a5',)
-
-from alembic import op
-import sqlalchemy as sa
+revision = 'wrs_newton'
+down_revision = '3d560427d776'
 
 
 def upgrade():
-    op.add_column('opendaylightjournal',
-                  sa.Column('version_id', sa.Integer, server_default='0',
-                            nullable=False))
+    pass
+
+
+def downgrade():
+    pass

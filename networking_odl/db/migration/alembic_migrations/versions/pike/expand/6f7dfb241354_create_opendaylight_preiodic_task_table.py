@@ -35,7 +35,7 @@ def upgrade():
     periodic_table = op.create_table(
         'opendaylight_periodic_task',
         sa.Column('state', sa.Enum(odl_const.PENDING, odl_const.PROCESSING,
-                                   name='state'),
+                                   name='state1'),
                   nullable=False),
         sa.Column('processing_operation', sa.String(70)),
         sa.Column('task', sa.String(70), primary_key=True),

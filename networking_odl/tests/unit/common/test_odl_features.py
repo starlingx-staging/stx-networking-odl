@@ -36,6 +36,7 @@ class TestOdlFeatures(base.DietTestCase):
         self.useFixture(self.features_fixture)
         super(TestOdlFeatures, self).setUp()
         self.features_fixture.mock_odl_features_init.stop()
+        cfg.CONF.set_override('state_path', None)
 
     @mock.patch.object(OpenDaylightRestClient, 'request')
     def test_fetch_exception(self, mocked_client):

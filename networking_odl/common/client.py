@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import shelve
 import threading
 
 from oslo_config import cfg
@@ -24,6 +25,7 @@ from requests import sessions
 
 from networking_odl.common import constants as odl_const
 from networking_odl.common import utils
+
 
 LOG = log.getLogger(__name__)
 cfg.CONF.import_group('ml2_odl', 'networking_odl.common.config')
@@ -63,6 +65,34 @@ class OpenDaylightRestClient(object):
         self.timeout = timeout
         self.session = sessions.Session()
         self.session.auth = (username, password)
+        # NOTE(knasim-wrs): Set the audit report within the underlying
+        # REST Client driver. This is because the L3RouterPlugin will
+        # independantly instantiate the client driver and needs to be
+        # audited as well.
+        self.audit_report = self.get_audit_report()
+
+    def sync_audit_report(self):
+        if isinstance(self.audit_report, shelve.Shelf):
+            self.audit_report.sync()
+
+    def set_audit_failure(self, failure):
+        self.audit_report[failure] = True
+        self.sync_audit_report()
+
+    def clear_audit_report(self):
+        if self.audit_report:
+            self.audit_report.update(
+                dict.fromkeys(self.audit_report.keys(), False))
+            self.sync_audit_report()
+
+    def get_audit_report(self):
+        if cfg.CONF.state_path is not None:
+            audit_report = shelve.open(
+                cfg.CONF.state_path + '/ml2_odl_audit_report',
+                writeback=True)
+            return audit_report
+        else:
+            return {}
 
     def get_resource(self, resource_type, resource_id):
         response = self.get(utils.make_url_object(resource_type) + '/' +
@@ -87,8 +117,16 @@ class OpenDaylightRestClient(object):
         LOG.debug(
             "Sending METHOD (%(method)s) URL (%(url)s) JSON (%(data)s)",
             {'method': method, 'url': url, 'data': data})
-        return self.session.request(
-            method, url=url, headers=headers, data=data, timeout=self.timeout)
+        try:
+            return self.session.request(
+                method, url=url, headers=headers, data=data,
+                timeout=self.timeout)
+        except requests.exceptions.ConnectionError:
+            with excutils.save_and_reraise_exception():
+                self.set_audit_failure('conn_failure')
+        except requests.exceptions.Timeout:
+            with excutils.save_and_reraise_exception():
+                self.set_audit_failure('response_failure')
 
     def sendjson(self, method, urlpath, obj):
         """Send json to the OpenDaylight controller."""
@@ -138,6 +176,10 @@ class OpenDaylightRestClient(object):
             with excutils.save_and_reraise_exception():
                 LOG.debug("Exception from ODL: %(e)s %(text)s",
                           {'e': error, 'text': response.text}, exc_info=1)
+                # Raise audit failure if ML2 URL returns
+                # authentication failure
+                if error.response.status_code == requests.codes.unauthorized:
+                    self.set_audit_failure('auth_failure')
         else:
             LOG.debug("Got response:\n"
                       "(%(response)s)", {'response': response.text})

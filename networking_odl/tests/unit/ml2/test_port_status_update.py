@@ -17,6 +17,7 @@ import re
 import threading
 
 import mock
+from oslo_config import cfg
 
 from networking_odl.common.client import OpenDaylightRestClient
 from networking_odl.common import websocket_client as odl_ws_client
@@ -60,6 +61,7 @@ class TestOdlPortStatusUpdate(base.DietTestCase):
         self.mock_ws_client = mock.patch.object(
             OpenDaylightWebsocketClient, 'odl_create_websocket')
         super(TestOdlPortStatusUpdate, self).setUp()
+        cfg.CONF.set_override('state_path', None)
 
     def test_object_create(self):
         OdlPortStatusUpdate()
